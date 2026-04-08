@@ -1,4 +1,4 @@
-module github.com/Gentleman-Programming/engram
+module github.com/castrometro/engram
 
 go 1.25.0
 

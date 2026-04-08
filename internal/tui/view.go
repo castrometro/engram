@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/version"
+	"github.com/castrometro/engram/internal/version"
 	"github.com/charmbracelet/lipgloss"
 )
 

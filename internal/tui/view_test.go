@@ -4,9 +4,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Gentleman-Programming/engram/internal/setup"
-	"github.com/Gentleman-Programming/engram/internal/store"
-	"github.com/Gentleman-Programming/engram/internal/version"
+	"github.com/castrometro/engram/internal/setup"
+	"github.com/castrometro/engram/internal/store"
+	"github.com/castrometro/engram/internal/version"
 )
 
 func TestTruncateStr(t *testing.T) {

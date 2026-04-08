@@ -33,8 +33,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/cloud/cloudstore"
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/castrometro/engram/internal/cloud/cloudstore"
+	"github.com/castrometro/engram/internal/store"
 )
 
 // maxMutationsPerBatch is the maximum number of mutations fetched and pushed

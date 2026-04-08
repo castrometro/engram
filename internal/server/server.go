@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/castrometro/engram/internal/store"
 )
 
 var loadServerStats = func(s *store.Store) (*store.Stats, error) {

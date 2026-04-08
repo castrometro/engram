@@ -177,7 +177,7 @@ If you haven't received a response within 7 days on a PR or issue, a single ping
 
 - PRs opened without an approved issue
 - PRs that fail CI and aren't updated within 30 days
-- Issues that are vague, a duplicate, or belong in [Discussions](https://github.com/Gentleman-Programming/engram/discussions)
+- Issues that are vague, a duplicate, or belong in [Discussions](https://github.com/castrometro/engram/discussions)
 - Issues with no response to a maintainer question after 14 days
 
 ---

@@ -15,7 +15,7 @@ Only the latest stable release receives security fixes.
 
 Report security issues privately via one of these channels:
 
-1. **GitHub Security Advisories** (preferred): [Report a vulnerability](https://github.com/Gentleman-Programming/engram/security/advisories/new)
+1. **GitHub Security Advisories** (preferred): [Report a vulnerability](https://github.com/castrometro/engram/security/advisories/new)
 2. **Email**: Contact the maintainers directly through the GitHub profile if the advisory flow is unavailable.
 
 ### What to Include

@@ -5,6 +5,6 @@
   "minAppVersion": "1.4.0",
   "description": "Sync your Engram persistent memory into your Obsidian vault as interconnected markdown notes.",
   "author": "Gentleman Programming",
-  "authorUrl": "https://github.com/Gentleman-Programming/engram",
+  "authorUrl": "https://github.com/castrometro/engram",
   "isDesktopOnly": false
 }
