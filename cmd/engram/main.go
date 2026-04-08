@@ -12,10 +12,13 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -26,6 +29,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Gentleman-Programming/engram/internal/cloud/autosync"
+	"github.com/Gentleman-Programming/engram/internal/cloud/cloudserver"
+	"github.com/Gentleman-Programming/engram/internal/cloud/cloudstore"
 	"github.com/Gentleman-Programming/engram/internal/mcp"
 	"github.com/Gentleman-Programming/engram/internal/obsidian"
 	"github.com/Gentleman-Programming/engram/internal/project"
@@ -145,6 +151,8 @@ func main() {
 	migrateOrphanedDB(cfg.DataDir)
 
 	switch os.Args[1] {
+	case "cloud":
+		cmdCloud(cfg)
 	case "serve":
 		cmdServe(cfg)
 	case "mcp":
@@ -207,6 +215,13 @@ func cmdServe(cfg store.Config) {
 	defer s.Close()
 
 	srv := newHTTPServer(s, port)
+
+	// Start cloud autosync if configured.
+	if am := maybeStartAutosync(cfg, s); am != nil {
+		srv.SetOnWrite(am.NotifyDirty)
+		srv.SetSyncStatus((*autosyncStatusAdapter)(am))
+		defer am.Stop()
+	}
 
 	// Graceful shutdown on SIGINT/SIGTERM.
 	sigCh := make(chan os.Signal, 1)
@@ -1519,6 +1534,384 @@ func printPostInstall(agent string) {
 	}
 }
 
+// ─── Cloud Commands ────────────────────────────────────────────────────────────
+
+// cloudConfigPath returns the path to the cloud config JSON file.
+func cloudConfigPath(cfg store.Config) string {
+	return filepath.Join(cfg.DataDir, "cloud.json")
+}
+
+// maybeStartAutosync starts the autosync.Manager if cloud is configured.
+// Returns nil if cloud sync is not enabled or not configured.
+func maybeStartAutosync(cfg store.Config, s *store.Store) *autosync.Manager {
+	path := cloudConfigPath(cfg)
+	cc, err := autosync.ReadCloudConfig(path)
+	if err != nil {
+		// File not found or unreadable — cloud sync not configured.
+		return nil
+	}
+	if cc.ServerURL == "" {
+		return nil
+	}
+
+	managerCfg := autosync.Config{
+		ServerURL: cc.ServerURL,
+		APIKey:    cc.APIKey,
+		ClientID:  cc.ClientID,
+		Project:   cc.Project,
+	}
+	if interval := os.Getenv("ENGRAM_CLOUD_PUSH_INTERVAL"); interval != "" {
+		if d, err := time.ParseDuration(interval); err == nil {
+			managerCfg.PushInterval = d
+		}
+	}
+	if interval := os.Getenv("ENGRAM_CLOUD_PULL_INTERVAL"); interval != "" {
+		if d, err := time.ParseDuration(interval); err == nil {
+			managerCfg.PullInterval = d
+		}
+	}
+
+	am := autosync.New(managerCfg, s)
+	am.Start()
+	return am
+}
+
+// autosyncStatusAdapter adapts autosync.Manager to server.SyncStatusProvider.
+type autosyncStatusAdapter autosync.Manager
+
+func (a *autosyncStatusAdapter) Status() server.SyncStatus {
+	m := (*autosync.Manager)(a)
+	st := m.Status()
+	srv := server.SyncStatus{
+		Phase:               st.Phase,
+		LastError:           st.LastError,
+		ConsecutiveFailures: st.ConsecutiveFailures,
+		BackoffUntil:        st.BackoffUntil,
+		LastSyncAt:          st.LastSyncAt,
+	}
+	return srv
+}
+
+// cmdCloud dispatches "engram cloud <subcommand>".
+func cmdCloud(cfg store.Config) {
+	if len(os.Args) < 3 {
+		printCloudUsage()
+		exitFunc(1)
+	}
+	switch os.Args[2] {
+	case "setup":
+		cmdCloudSetup(cfg)
+	case "status":
+		cmdCloudStatus(cfg)
+	case "enroll":
+		cmdCloudEnroll(cfg)
+	case "unenroll":
+		cmdCloudUnenroll(cfg)
+	case "push":
+		cmdCloudPush(cfg)
+	case "pull":
+		cmdCloudPull(cfg)
+	case "serve":
+		cmdCloudServe()
+	default:
+		fmt.Fprintf(os.Stderr, "unknown cloud subcommand: %s\n\n", os.Args[2])
+		printCloudUsage()
+		exitFunc(1)
+	}
+}
+
+// cmdCloudSetup runs an interactive wizard to configure cloud sync.
+func cmdCloudSetup(cfg store.Config) {
+	fmt.Println("Engram Cloud Setup")
+	fmt.Println("══════════════════")
+	fmt.Println()
+
+	var serverURL, clientName, project string
+
+	// Allow env-var pre-fill for scripted setup.
+	serverURL = os.Getenv("ENGRAM_CLOUD_URL")
+	project = os.Getenv("ENGRAM_CLOUD_PROJECT")
+
+	reader := bufio.NewReader(os.Stdin)
+
+	if serverURL == "" {
+		fmt.Print("Cloud server URL (e.g. https://engram.mycompany.com): ")
+		line, err := reader.ReadString('\n')
+		serverURL = strings.TrimSpace(line)
+		if err != nil || serverURL == "" {
+			fmt.Fprintln(os.Stderr, "error: server URL is required")
+			exitFunc(1)
+		}
+	}
+	serverURL = strings.TrimRight(serverURL, "/")
+
+	if project == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			project = detectProject(cwd)
+		}
+		fmt.Printf("Project name [%s]: ", project)
+		line, _ := reader.ReadString('\n')
+		if input := strings.TrimSpace(line); input != "" {
+			project = input
+		}
+	}
+	if project == "" {
+		fmt.Fprintln(os.Stderr, "error: project name is required")
+		exitFunc(1)
+	}
+
+	if h, err := os.Hostname(); err == nil {
+		clientName = h
+	} else {
+		clientName = "unknown-host"
+	}
+
+	// Register with the cloud server.
+	fmt.Printf("\nRegistering with %s...\n", serverURL)
+	body, _ := json.Marshal(map[string]string{
+		"client_name": clientName,
+		"project":     project,
+	})
+	resp, err := http.Post(serverURL+"/v1/auth/register", "application/json", bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: registration failed: %v\n", err)
+		exitFunc(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		fmt.Fprintf(os.Stderr, "error: server returned %d: %s\n", resp.StatusCode, b)
+		exitFunc(1)
+	}
+
+	var regResp map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&regResp); err != nil {
+		fmt.Fprintf(os.Stderr, "error: decode response: %v\n", err)
+		exitFunc(1)
+	}
+
+	cc := &autosync.CloudConfig{
+		ServerURL:  serverURL,
+		APIKey:     regResp["api_key"],
+		ClientID:   regResp["client_id"],
+		ClientName: clientName,
+		Project:    project,
+	}
+
+	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "error: create data dir: %v\n", err)
+		exitFunc(1)
+	}
+	if err := autosync.WriteCloudConfig(cloudConfigPath(cfg), cc); err != nil {
+		fmt.Fprintf(os.Stderr, "error: save config: %v\n", err)
+		exitFunc(1)
+	}
+
+	fmt.Println()
+	fmt.Println("✓ Cloud sync configured!")
+	fmt.Printf("  Client ID : %s\n", cc.ClientID)
+	fmt.Printf("  Project   : %s\n", project)
+	fmt.Printf("  Server    : %s\n", serverURL)
+	fmt.Println()
+	fmt.Println("Start the HTTP server to enable background sync:")
+	fmt.Println("  engram serve")
+}
+
+// cmdCloudStatus prints the current cloud sync status.
+func cmdCloudStatus(cfg store.Config) {
+	cc, err := autosync.ReadCloudConfig(cloudConfigPath(cfg))
+	if os.IsNotExist(err) {
+		fmt.Println("Cloud sync not configured. Run: engram cloud setup")
+		return
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error reading cloud config: %v\n", err)
+		exitFunc(1)
+	}
+
+	fmt.Println("Cloud Sync Status")
+	fmt.Println("═════════════════")
+	fmt.Printf("  Server    : %s\n", cc.ServerURL)
+	fmt.Printf("  Project   : %s\n", cc.Project)
+	fmt.Printf("  Client ID : %s\n", cc.ClientID)
+	fmt.Printf("  Config    : %s\n", cloudConfigPath(cfg))
+}
+
+// cmdCloudEnroll enrolls a project for cloud sync.
+func cmdCloudEnroll(cfg store.Config) {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: engram cloud enroll <project>")
+		exitFunc(1)
+	}
+	project := os.Args[3]
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.EnrollProject(project); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		exitFunc(1)
+	}
+	fmt.Printf("✓ Project %q enrolled for cloud sync\n", project)
+}
+
+// cmdCloudUnenroll unenrolls a project from cloud sync.
+func cmdCloudUnenroll(cfg store.Config) {
+	if len(os.Args) < 4 {
+		fmt.Fprintln(os.Stderr, "usage: engram cloud unenroll <project>")
+		exitFunc(1)
+	}
+	project := os.Args[3]
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal(err)
+	}
+	defer s.Close()
+
+	if err := s.UnenrollProject(project); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		exitFunc(1)
+	}
+	fmt.Printf("✓ Project %q unenrolled from cloud sync\n", project)
+}
+
+// cmdCloudPush performs a one-shot manual push.
+func cmdCloudPush(cfg store.Config) {
+	cc, err := autosync.ReadCloudConfig(cloudConfigPath(cfg))
+	if os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "Cloud sync not configured. Run: engram cloud setup")
+		exitFunc(1)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		exitFunc(1)
+	}
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal(err)
+	}
+	defer s.Close()
+
+	am := autosync.New(autosync.Config{
+		ServerURL: cc.ServerURL,
+		APIKey:    cc.APIKey,
+		ClientID:  cc.ClientID,
+		Project:   cc.Project,
+	}, s)
+
+	am.RunPushOnce()
+	st := am.Status()
+	if st.Phase == string(autosync.PhaseDegraded) {
+		fmt.Fprintf(os.Stderr, "push failed: %s\n", st.LastError)
+		exitFunc(1)
+	}
+	fmt.Println("✓ Push complete")
+}
+
+// cmdCloudPull performs a one-shot manual pull.
+func cmdCloudPull(cfg store.Config) {
+	cc, err := autosync.ReadCloudConfig(cloudConfigPath(cfg))
+	if os.IsNotExist(err) {
+		fmt.Fprintln(os.Stderr, "Cloud sync not configured. Run: engram cloud setup")
+		exitFunc(1)
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		exitFunc(1)
+	}
+
+	s, err := storeNew(cfg)
+	if err != nil {
+		fatal(err)
+	}
+	defer s.Close()
+
+	am := autosync.New(autosync.Config{
+		ServerURL: cc.ServerURL,
+		APIKey:    cc.APIKey,
+		ClientID:  cc.ClientID,
+		Project:   cc.Project,
+	}, s)
+
+	am.RunPullOnce()
+	st := am.Status()
+	if st.Phase == string(autosync.PhaseDegraded) {
+		fmt.Fprintf(os.Stderr, "pull failed: %s\n", st.LastError)
+		exitFunc(1)
+	}
+	fmt.Println("✓ Pull complete")
+}
+
+// cmdCloudServe starts the Engram cloud sync server.
+func cmdCloudServe() {
+	dbPath := os.Getenv("ENGRAM_CLOUD_DB")
+	if dbPath == "" {
+		dbPath = "engram-cloud.db"
+	}
+	port := 7438
+	if p := os.Getenv("ENGRAM_CLOUD_PORT"); p != "" {
+		if n, err := strconv.Atoi(p); err == nil {
+			port = n
+		}
+	}
+	if len(os.Args) > 3 {
+		if n, err := strconv.Atoi(os.Args[3]); err == nil {
+			port = n
+		}
+	}
+
+	cs, err := cloudstore.Open(dbPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: open cloud db: %v\n", err)
+		exitFunc(1)
+	}
+	defer cs.Close()
+
+	srv := cloudserver.New(cs, port)
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("[engram-cloud] shutting down...")
+		exitFunc(0)
+	}()
+
+	log.Printf("[engram-cloud] starting on port %d (db: %s)", port, dbPath)
+	if err := srv.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		exitFunc(1)
+	}
+}
+
+func printCloudUsage() {
+	fmt.Print(`Usage: engram cloud <subcommand>
+
+Subcommands:
+  setup              Interactive setup: register with cloud server, save config
+  status             Show current cloud sync configuration
+  enroll <project>   Enroll a project for cloud sync
+  unenroll <project> Remove a project from cloud sync
+  push               Manually push pending local mutations to cloud
+  pull               Manually pull remote mutations from cloud
+  serve [port]       Start the Engram cloud sync server (default port: 7438)
+
+Environment:
+  ENGRAM_CLOUD_URL           Cloud server base URL (used by setup)
+  ENGRAM_CLOUD_PROJECT       Project name override (used by setup)
+  ENGRAM_CLOUD_PORT          Override cloud server port (default: 7438)
+  ENGRAM_CLOUD_DB            Path to cloud server SQLite DB (default: engram-cloud.db)
+  ENGRAM_CLOUD_PUSH_INTERVAL Push interval (e.g. 30s, 1m; default: 30s)
+  ENGRAM_CLOUD_PULL_INTERVAL Pull interval (e.g. 30s, 1m; default: 30s)
+`)
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 func printUsage() {
@@ -1565,12 +1958,25 @@ Commands:
                        --interval      Sync interval for --watch mode (default: 10m, minimum: 1m)
 
   version            Print version
+  cloud setup        Interactive cloud sync setup (register with server)
+  cloud status       Show cloud sync configuration
+  cloud enroll <p>   Enroll project <p> for cloud sync
+  cloud unenroll <p> Remove project <p> from cloud sync
+  cloud push         Manually push local mutations to cloud
+  cloud pull         Manually pull remote mutations from cloud
+  cloud serve [port] Start the Engram cloud sync server (default port: 7438)
   help               Show this help
 
 Environment:
-  ENGRAM_DATA_DIR    Override data directory (default: ~/.engram)
-  ENGRAM_PORT        Override HTTP server port (default: 7437)
-  ENGRAM_PROJECT     Override auto-detected project name for MCP server
+  ENGRAM_DATA_DIR            Override data directory (default: ~/.engram)
+  ENGRAM_PORT                Override HTTP server port (default: 7437)
+  ENGRAM_PROJECT             Override auto-detected project name for MCP server
+  ENGRAM_CLOUD_URL           Cloud server base URL (for engram cloud setup)
+  ENGRAM_CLOUD_PROJECT       Project name for cloud setup
+  ENGRAM_CLOUD_PORT          Cloud server port (default: 7438)
+  ENGRAM_CLOUD_DB            Cloud server database path (default: engram-cloud.db)
+  ENGRAM_CLOUD_PUSH_INTERVAL Push interval when serving (default: 30s)
+  ENGRAM_CLOUD_PULL_INTERVAL Pull interval when serving (default: 30s)
 
 MCP Configuration (add to your agent's config):
   {
