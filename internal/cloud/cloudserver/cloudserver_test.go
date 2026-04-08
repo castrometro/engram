@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/Gentleman-Programming/engram/internal/cloud/cloudstore"
 )
 
@@ -20,6 +22,7 @@ func newTestServer(t *testing.T) (*CloudServer, string) {
 	if err != nil {
 		t.Fatalf("cloudstore.Open: %v", err)
 	}
+	cs.SetBcryptCost(bcrypt.MinCost)
 	t.Cleanup(func() { _ = cs.Close() })
 	srv := New(cs, 0)
 	return srv, registerClient(t, srv, "test-project", "test-client")
@@ -94,12 +97,19 @@ func TestHandleHealth(t *testing.T) {
 
 // ─── Register ─────────────────────────────────────────────────────────────────
 
-func TestHandleRegister_Success(t *testing.T) {
+func newTestStoreWithMinCost(t *testing.T) *cloudstore.CloudStore {
+	t.Helper()
 	cs, err := cloudstore.Open(":memory:")
 	if err != nil {
 		t.Fatalf("cloudstore.Open: %v", err)
 	}
+	cs.SetBcryptCost(bcrypt.MinCost)
 	t.Cleanup(func() { _ = cs.Close() })
+	return cs
+}
+
+func TestHandleRegister_Success(t *testing.T) {
+	cs := newTestStoreWithMinCost(t)
 	srv := New(cs, 0)
 
 	rec := doJSON(t, srv.Handler(), http.MethodPost, "/v1/auth/register", map[string]string{
@@ -124,11 +134,7 @@ func TestHandleRegister_Success(t *testing.T) {
 }
 
 func TestHandleRegister_MissingProject(t *testing.T) {
-	cs, err := cloudstore.Open(":memory:")
-	if err != nil {
-		t.Fatalf("cloudstore.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
+	cs := newTestStoreWithMinCost(t)
 	srv := New(cs, 0)
 
 	rec := doJSON(t, srv.Handler(), http.MethodPost, "/v1/auth/register", map[string]string{"client_name": "alice"})
@@ -138,11 +144,7 @@ func TestHandleRegister_MissingProject(t *testing.T) {
 }
 
 func TestHandleRegister_DefaultClientName(t *testing.T) {
-	cs, err := cloudstore.Open(":memory:")
-	if err != nil {
-		t.Fatalf("cloudstore.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
+	cs := newTestStoreWithMinCost(t)
 	srv := New(cs, 0)
 
 	rec := doJSON(t, srv.Handler(), http.MethodPost, "/v1/auth/register", map[string]string{"project": "proj"})
@@ -342,11 +344,7 @@ func (stubListener) Close() error              { return nil }
 func (stubListener) Addr() net.Addr            { return &net.TCPAddr{} }
 
 func TestStart_ListenError(t *testing.T) {
-	cs, err := cloudstore.Open(":memory:")
-	if err != nil {
-		t.Fatalf("cloudstore.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
+	cs := newTestStoreWithMinCost(t)
 	srv := New(cs, 0)
 	srv.listen = func(_, _ string) (net.Listener, error) {
 		return nil, errors.New("listen error")
@@ -357,19 +355,12 @@ func TestStart_ListenError(t *testing.T) {
 }
 
 func TestStart_UsesInjectedServe(t *testing.T) {
-	cs, err := cloudstore.Open(":memory:")
-	if err != nil {
-		t.Fatalf("cloudstore.Open: %v", err)
-	}
-	t.Cleanup(func() { _ = cs.Close() })
+	cs := newTestStoreWithMinCost(t)
 	srv := New(cs, 0)
 	srv.listen = func(_, _ string) (net.Listener, error) { return stubListener{}, nil }
 	srv.serve = func(_ net.Listener, _ http.Handler) error { return errors.New("serve stopped") }
-	err = srv.Start()
-	if err == nil || err.Error() != "cloudserver: listen 0.0.0.0:0: serve stopped" {
-		// Expect wrapped error — just check it's non-nil and contains "serve stopped".
-		if err == nil {
-			t.Fatal("expected error, got nil")
-		}
+	err := srv.Start()
+	if err == nil {
+		t.Fatal("expected error, got nil")
 	}
 }

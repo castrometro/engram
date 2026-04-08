@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 func newTestStore(t *testing.T) *CloudStore {
@@ -12,6 +14,8 @@ func newTestStore(t *testing.T) *CloudStore {
 	if err != nil {
 		t.Fatalf("cloudstore.Open: %v", err)
 	}
+	// Use minimum bcrypt cost to keep tests fast.
+	cs.SetBcryptCost(bcrypt.MinCost)
 	t.Cleanup(func() { _ = cs.Close() })
 	return cs
 }

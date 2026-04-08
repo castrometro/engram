@@ -37,6 +37,10 @@ import (
 	"github.com/Gentleman-Programming/engram/internal/store"
 )
 
+// maxMutationsPerBatch is the maximum number of mutations fetched and pushed
+// in a single push cycle. The HasMore check uses the same constant.
+const maxMutationsPerBatch = 100
+
 // defaultPushInterval is how often the push loop wakes up when idle.
 const defaultPushInterval = 30 * time.Second
 
@@ -256,7 +260,7 @@ func (m *Manager) runPush() {
 		return
 	}
 
-	mutations, err := m.s.ListPendingSyncMutations(store.DefaultSyncTargetKey, 100)
+	mutations, err := m.s.ListPendingSyncMutations(store.DefaultSyncTargetKey, maxMutationsPerBatch)
 	if err != nil {
 		m.recordFailure(fmt.Errorf("list pending mutations: %w", err))
 		return
@@ -318,7 +322,7 @@ func (m *Manager) runPush() {
 	log.Printf("[engram-cloud] pushed %d mutations (up to seq %d)", len(mutations), lastSeq)
 
 	// If there may be more pending mutations, trigger another push immediately.
-	if len(mutations) == 100 {
+	if len(mutations) == maxMutationsPerBatch {
 		m.NotifyDirty()
 	}
 }
@@ -343,6 +347,9 @@ func (m *Manager) pullLoop() {
 		select {
 		case <-m.stop:
 			return
+		case <-m.dirty:
+			// Also pull when dirty is signalled (e.g. HasMore from a previous pull).
+			m.runPull()
 		case <-ticker.C:
 			m.runPull()
 		}
@@ -362,7 +369,7 @@ func (m *Manager) runPull() {
 
 	m.setPhase(PhasePulling)
 
-	url := fmt.Sprintf("%s/v1/sync/pull?since_seq=%d&limit=100", m.cfg.ServerURL, syncState.LastPulledSeq)
+	url := fmt.Sprintf("%s/v1/sync/pull?since_seq=%d&limit=%d", m.cfg.ServerURL, syncState.LastPulledSeq, maxMutationsPerBatch)
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		m.recordFailure(fmt.Errorf("create pull request: %w", err))
@@ -425,9 +432,10 @@ func (m *Manager) runPull() {
 	m.recordSuccess()
 	log.Printf("[engram-cloud] pulled and applied %d mutations (up to seq %d)", len(pullResp.Mutations), lastAppliedSeq)
 
-	// If there are more mutations waiting, pull again immediately.
+	// If there are more mutations, signal the pull loop to run again on the
+	// next tick rather than spawning a new goroutine to avoid unbounded recursion.
 	if pullResp.HasMore {
-		go m.runPull()
+		m.NotifyDirty()
 	}
 }
 

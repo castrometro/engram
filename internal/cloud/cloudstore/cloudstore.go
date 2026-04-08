@@ -7,27 +7,39 @@
 //
 //	cloud_mutations  – append-only log of every mutation pushed by any client
 //	client_cursors   – per-client/project pull cursor (last seq seen)
-//	api_keys         – hashed API keys scoped to a project
+//	api_keys         – bcrypt-hashed API keys scoped to a project
 //
-// Push deduplication is performed by the caller (autosync.Manager) using the
-// local sync_mutations journal; the cloud server simply appends what it
-// receives and assigns global sequence numbers.
+// API key security model:
+//
+//	Raw key format : "ek_" + 64 random hex chars (67 chars total, 256 bits entropy)
+//	Lookup prefix  : first 19 chars ("ek_" + 16 hex) — stored as UNIQUE in DB
+//	Stored hash    : bcrypt(full_raw_key) — validated with bcrypt.CompareHashAndPassword
+//
+// This follows the industry-standard split-key pattern: the prefix is used for
+// a fast indexed lookup, and bcrypt protects the secret suffix from offline
+// attacks even if the database is compromised.
 package cloudstore
 
 import (
 	"crypto/rand"
-	"crypto/sha256"
-	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 
 	_ "modernc.org/sqlite"
 )
 
 // openDB is injectable for testing.
 var openDB = sql.Open
+
+// defaultBcryptCost is the work factor for bcrypt API key hashing.
+// Cost 10 yields ~100 ms per operation on typical hardware, which is
+// acceptable for a team sync server handling one request per client per
+// 30-second poll interval.
+const defaultBcryptCost = 10
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -63,7 +75,8 @@ type APIKeyInfo struct {
 
 // CloudStore is the server-side database handle.
 type CloudStore struct {
-	db *sql.DB
+	db         *sql.DB
+	bcryptCost int // injectable for testing via SetBcryptCost
 }
 
 // ─── Open / Close ─────────────────────────────────────────────────────────────
@@ -76,12 +89,17 @@ func Open(dbPath string) (*CloudStore, error) {
 		return nil, fmt.Errorf("cloudstore: open %s: %w", dbPath, err)
 	}
 	db.SetMaxOpenConns(1) // SQLite single-writer
-	cs := &CloudStore{db: db}
+	cs := &CloudStore{db: db, bcryptCost: defaultBcryptCost}
 	if err := cs.migrate(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("cloudstore: migrate: %w", err)
 	}
 	return cs, nil
+}
+
+// SetBcryptCost overrides the bcrypt work factor. Use bcrypt.MinCost in tests.
+func (cs *CloudStore) SetBcryptCost(cost int) {
+	cs.bcryptCost = cost
 }
 
 // Close closes the underlying database connection.
@@ -117,7 +135,9 @@ func (cs *CloudStore) migrate() error {
 		);
 
 		CREATE TABLE IF NOT EXISTS api_keys (
-			key_hash    TEXT PRIMARY KEY,
+			id          INTEGER PRIMARY KEY AUTOINCREMENT,
+			key_prefix  TEXT NOT NULL UNIQUE,
+			key_hash    TEXT NOT NULL,
 			client_id   TEXT NOT NULL,
 			project     TEXT NOT NULL DEFAULT '',
 			client_name TEXT NOT NULL DEFAULT '',
@@ -133,34 +153,44 @@ func (cs *CloudStore) migrate() error {
 
 // ─── API Key Management ───────────────────────────────────────────────────────
 
-// rawAPIKey generates a cryptographically random raw API key string.
-// Format: "ek_" + 64 lowercase hex characters (32 random bytes).
-func rawAPIKey() (string, error) {
-	b := make([]byte, 32)
+// rawAPIKeyLen is the number of random bytes to generate for each API key.
+// Results in a 67-char string: "ek_" (3) + 64 hex chars from 32 random bytes (256 bits entropy).
+const rawAPIKeyLen = 32
+
+// keyPrefixLen is the number of leading characters used for DB lookup.
+// "ek_" (3) + 16 hex chars = 19 chars. Used as a UNIQUE index.
+const keyPrefixLen = 19
+
+// newRawAPIKey generates a cryptographically random API key.
+// Format: "ek_" + 64 lowercase hex chars (32 random bytes = 256 bits entropy).
+func newRawAPIKey() (string, error) {
+	b := make([]byte, rawAPIKeyLen)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
 	}
 	return "ek_" + hex.EncodeToString(b), nil
 }
 
-// hashKey computes a SHA-256 hex digest of the raw API key.
-// This is stored in api_keys.key_hash.
-func hashKey(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
-}
-
-// CreateAPIKey generates a new API key for the given client and stores its
-// hash in the database. It returns the raw key (only shown once to the user).
+// CreateAPIKey generates a new API key for the given client and stores a
+// bcrypt hash in the database. It returns the raw key (shown only once to
+// the user). The first 19 characters serve as a stable lookup prefix;
+// the full key is validated via bcrypt.CompareHashAndPassword.
 func (cs *CloudStore) CreateAPIKey(clientID, project, clientName string) (string, error) {
-	raw, err := rawAPIKey()
+	raw, err := newRawAPIKey()
 	if err != nil {
 		return "", fmt.Errorf("cloudstore: generate api key: %w", err)
 	}
+
+	hash, err := bcrypt.GenerateFromPassword([]byte(raw), cs.bcryptCost)
+	if err != nil {
+		return "", fmt.Errorf("cloudstore: hash api key: %w", err)
+	}
+
+	prefix := raw[:keyPrefixLen]
 	_, err = cs.db.Exec(
-		`INSERT INTO api_keys (key_hash, client_id, project, client_name)
-		 VALUES (?, ?, ?, ?)`,
-		hashKey(raw), clientID, project, clientName,
+		`INSERT INTO api_keys (key_prefix, key_hash, client_id, project, client_name)
+		 VALUES (?, ?, ?, ?, ?)`,
+		prefix, string(hash), clientID, project, clientName,
 	)
 	if err != nil {
 		return "", fmt.Errorf("cloudstore: store api key: %w", err)
@@ -168,20 +198,23 @@ func (cs *CloudStore) CreateAPIKey(clientID, project, clientName string) (string
 	return raw, nil
 }
 
-// ValidateAPIKey looks up the raw key by its SHA-256 hash and returns the
-// associated APIKeyInfo. Returns an error if the key does not exist, is
-// expired, or the comparison fails. The comparison uses constant-time
-// equality to prevent timing attacks.
+// ValidateAPIKey looks up the API key by its prefix, then verifies the full
+// key with bcrypt. Returns the associated APIKeyInfo on success, or an error
+// if the key is missing, expired, or invalid.
 func (cs *CloudStore) ValidateAPIKey(raw string) (*APIKeyInfo, error) {
-	h := hashKey(raw)
+	if len(raw) < keyPrefixLen {
+		return nil, fmt.Errorf("cloudstore: invalid api key format")
+	}
+	prefix := raw[:keyPrefixLen]
 
+	var storedHash string
 	var info APIKeyInfo
 	var expiresAt sql.NullString
 	err := cs.db.QueryRow(
-		`SELECT client_id, project, client_name, expires_at
-		 FROM api_keys WHERE key_hash = ?`,
-		h,
-	).Scan(&info.ClientID, &info.Project, &info.ClientName, &expiresAt)
+		`SELECT key_hash, client_id, project, client_name, expires_at
+		 FROM api_keys WHERE key_prefix = ?`,
+		prefix,
+	).Scan(&storedHash, &info.ClientID, &info.Project, &info.ClientName, &expiresAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("cloudstore: invalid api key")
 	}
@@ -189,16 +222,16 @@ func (cs *CloudStore) ValidateAPIKey(raw string) (*APIKeyInfo, error) {
 		return nil, fmt.Errorf("cloudstore: validate api key: %w", err)
 	}
 
-	// Constant-time comparison of the provided hash against the stored hash to
-	// avoid timing side-channels even though both values were looked up by hash.
-	storedHash := hashKey(raw) // deterministic for the same input
-	if subtle.ConstantTimeCompare([]byte(h), []byte(storedHash)) == 0 {
+	if err := bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(raw)); err != nil {
 		return nil, fmt.Errorf("cloudstore: invalid api key")
 	}
 
 	if expiresAt.Valid {
 		exp, err := time.Parse(time.RFC3339, expiresAt.String)
-		if err == nil && time.Now().After(exp) {
+		if err != nil {
+			return nil, fmt.Errorf("cloudstore: malformed expiry timestamp: %w", err)
+		}
+		if time.Now().After(exp) {
 			return nil, fmt.Errorf("cloudstore: api key expired")
 		}
 	}
@@ -328,8 +361,8 @@ func (cs *CloudStore) GetProjectStatus(project string) (*ProjectStatus, error) {
 	return &s, nil
 }
 
-// newClientID generates a unique client identifier.
-func newClientID() (string, error) {
+// NewClientID generates and returns a new unique client identifier.
+func NewClientID() (string, error) {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		return "", err
@@ -337,7 +370,4 @@ func newClientID() (string, error) {
 	return "client-" + hex.EncodeToString(b), nil
 }
 
-// NewClientID generates and returns a new unique client identifier.
-func NewClientID() (string, error) {
-	return newClientID()
-}
+

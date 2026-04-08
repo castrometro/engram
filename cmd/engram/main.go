@@ -1547,12 +1547,10 @@ func maybeStartAutosync(cfg store.Config, s *store.Store) *autosync.Manager {
 	path := cloudConfigPath(cfg)
 	cc, err := autosync.ReadCloudConfig(path)
 	if err != nil {
-		return nil // not configured
-	}
-	if !os.IsNotExist(err) && cc.ServerURL == "" {
+		// File not found or unreadable — cloud sync not configured.
 		return nil
 	}
-	if cc == nil || cc.ServerURL == "" {
+	if cc.ServerURL == "" {
 		return nil
 	}
 
@@ -1634,9 +1632,13 @@ func cmdCloudSetup(cfg store.Config) {
 	serverURL = os.Getenv("ENGRAM_CLOUD_URL")
 	project = os.Getenv("ENGRAM_CLOUD_PROJECT")
 
+	reader := bufio.NewReader(os.Stdin)
+
 	if serverURL == "" {
 		fmt.Print("Cloud server URL (e.g. https://engram.mycompany.com): ")
-		if _, err := fmt.Scan(&serverURL); err != nil || serverURL == "" {
+		line, err := reader.ReadString('\n')
+		serverURL = strings.TrimSpace(line)
+		if err != nil || serverURL == "" {
 			fmt.Fprintln(os.Stderr, "error: server URL is required")
 			exitFunc(1)
 		}
@@ -1648,9 +1650,8 @@ func cmdCloudSetup(cfg store.Config) {
 			project = detectProject(cwd)
 		}
 		fmt.Printf("Project name [%s]: ", project)
-		var input string
-		fmt.Scan(&input)
-		if input != "" {
+		line, _ := reader.ReadString('\n')
+		if input := strings.TrimSpace(line); input != "" {
 			project = input
 		}
 	}
