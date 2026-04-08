@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Gentleman-Programming/engram/internal/mcp"
-	"github.com/Gentleman-Programming/engram/internal/obsidian"
-	"github.com/Gentleman-Programming/engram/internal/store"
-	versioncheck "github.com/Gentleman-Programming/engram/internal/version"
+	"github.com/castrometro/engram/internal/mcp"
+	"github.com/castrometro/engram/internal/obsidian"
+	"github.com/castrometro/engram/internal/store"
+	versioncheck "github.com/castrometro/engram/internal/version"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 )
 

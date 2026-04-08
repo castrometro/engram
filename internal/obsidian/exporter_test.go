@@ -3,7 +3,7 @@ package obsidian
 import (
 	"testing"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/castrometro/engram/internal/store"
 )
 
 // ─── Mock StoreReader ─────────────────────────────────────────────────────────

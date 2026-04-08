@@ -62,7 +62,7 @@ Function signature follows `cmdExport`/`cmdSync` pattern: parse flags, open stor
 ```go
 package obsidian
 
-import "github.com/Gentleman-Programming/engram/internal/store"
+import "github.com/castrometro/engram/internal/store"
 
 // ExportConfig holds all CLI flags for the export command.
 type ExportConfig struct {

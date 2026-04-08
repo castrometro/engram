@@ -6,7 +6,7 @@ This project follows [Conventional Commits](https://www.conventionalcommits.org/
 
 ## Where to Find Release Notes
 
-Full release notes with changelogs per version live on the **[GitHub Releases page](https://github.com/Gentleman-Programming/engram/releases)**.
+Full release notes with changelogs per version live on the **[GitHub Releases page](https://github.com/castrometro/engram/releases)**.
 
 GoReleaser generates them automatically from commits, filtering by type:
 - `feat:` / `fix:` / `refactor:` / `chore:` commits appear in the release notes

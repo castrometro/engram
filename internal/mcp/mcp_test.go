@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/castrometro/engram/internal/store"
 	mcppkg "github.com/mark3labs/mcp-go/mcp"
 )
 

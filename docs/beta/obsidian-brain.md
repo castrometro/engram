@@ -1,6 +1,6 @@
 # 🧠 Obsidian Brain — Beta
 
-> **Status**: Beta — feedback welcome on the [GitHub issues](https://github.com/Gentleman-Programming/engram/issues) tagged `beta:obsidian`.
+> **Status**: Beta — feedback welcome on the [GitHub issues](https://github.com/castrometro/engram/issues) tagged `beta:obsidian`.
 > **Available since**: `v1.12.0-beta.1`
 > **Stability**: Behavior is locked but flag names may evolve before stable release.
 > **Side-by-side**: This beta installs as `engram-beta` so it doesn't replace your stable `engram`. Both binaries share the same `~/.engram/engram.db`, so memories captured by your stable agent show up in the beta exports automatically.
@@ -29,12 +29,12 @@ The result: your agent's knowledge becomes a **navigable cognitive map** instead
 
 The beta ships as a separate binary named `engram-beta` so it never touches your stable `engram` install. Both binaries read and write the same `~/.engram/engram.db`, so anything captured by your stable agent is immediately visible to the beta.
 
-Pick the right archive for your platform from the [release page](https://github.com/Gentleman-Programming/engram/releases/tag/v1.12.0-beta.1), then extract and rename:
+Pick the right archive for your platform from the [release page](https://github.com/castrometro/engram/releases/tag/v1.12.0-beta.1), then extract and rename:
 
 ### macOS (Apple Silicon)
 
 ```bash
-curl -L https://github.com/Gentleman-Programming/engram/releases/download/v1.12.0-beta.1/engram_1.12.0-beta.1_darwin_arm64.tar.gz -o /tmp/engram-beta.tar.gz
+curl -L https://github.com/castrometro/engram/releases/download/v1.12.0-beta.1/engram_1.12.0-beta.1_darwin_arm64.tar.gz -o /tmp/engram-beta.tar.gz
 tar -xzf /tmp/engram-beta.tar.gz -C /tmp
 sudo mv /tmp/engram /usr/local/bin/engram-beta
 sudo chmod +x /usr/local/bin/engram-beta
@@ -44,7 +44,7 @@ engram-beta version
 ### macOS (Intel)
 
 ```bash
-curl -L https://github.com/Gentleman-Programming/engram/releases/download/v1.12.0-beta.1/engram_1.12.0-beta.1_darwin_amd64.tar.gz -o /tmp/engram-beta.tar.gz
+curl -L https://github.com/castrometro/engram/releases/download/v1.12.0-beta.1/engram_1.12.0-beta.1_darwin_amd64.tar.gz -o /tmp/engram-beta.tar.gz
 tar -xzf /tmp/engram-beta.tar.gz -C /tmp
 sudo mv /tmp/engram /usr/local/bin/engram-beta
 sudo chmod +x /usr/local/bin/engram-beta
@@ -54,7 +54,7 @@ engram-beta version
 ### Linux
 
 ```bash
-curl -L https://github.com/Gentleman-Programming/engram/releases/download/v1.12.0-beta.1/engram_1.12.0-beta.1_linux_amd64.tar.gz -o /tmp/engram-beta.tar.gz
+curl -L https://github.com/castrometro/engram/releases/download/v1.12.0-beta.1/engram_1.12.0-beta.1_linux_amd64.tar.gz -o /tmp/engram-beta.tar.gz
 tar -xzf /tmp/engram-beta.tar.gz -C /tmp
 sudo mv /tmp/engram /usr/local/bin/engram-beta
 sudo chmod +x /usr/local/bin/engram-beta
@@ -64,7 +64,7 @@ engram-beta version
 ### From source (`go install`)
 
 ```bash
-go install github.com/Gentleman-Programming/engram/cmd/engram@v1.12.0-beta.1
+go install github.com/castrometro/engram/cmd/engram@v1.12.0-beta.1
 mv ~/go/bin/engram ~/go/bin/engram-beta
 engram-beta version
 ```
@@ -358,7 +358,7 @@ You can absolutely tweak the graph view in Obsidian's UI — Engram's `preserve`
 
 ## TypeScript Plugin (Optional)
 
-For an in-Obsidian experience with a ribbon button, settings tab, and status bar indicator, there's a TypeScript community plugin in [`plugin/obsidian/`](https://github.com/Gentleman-Programming/engram/tree/main/plugin/obsidian).
+For an in-Obsidian experience with a ribbon button, settings tab, and status bar indicator, there's a TypeScript community plugin in [`plugin/obsidian/`](https://github.com/castrometro/engram/tree/main/plugin/obsidian).
 
 It uses Engram's HTTP API (`engram serve`) instead of reading SQLite directly:
 
@@ -445,7 +445,7 @@ This is a beta feature. **We want to hear how it works for you, especially**:
 - Did the daemon mode crash, leak memory, or behave unexpectedly?
 - Did the graph config bootstrap clobber something you cared about?
 
-File issues at [github.com/Gentleman-Programming/engram/issues](https://github.com/Gentleman-Programming/engram/issues) with the `beta:obsidian` label.
+File issues at [github.com/castrometro/engram/issues](https://github.com/castrometro/engram/issues) with the `beta:obsidian` label.
 
 ---
 

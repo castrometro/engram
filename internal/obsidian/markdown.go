@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/Gentleman-Programming/engram/internal/store"
+	"github.com/castrometro/engram/internal/store"
 )
 
 // ObservationToMarkdown converts a store.Observation into an Obsidian-compatible
